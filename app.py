@@ -683,4 +683,3 @@ st.markdown("---")
 if st.button("Reset"):
     st.session_state.doc_outputs = []
     st.rerun()
-)
