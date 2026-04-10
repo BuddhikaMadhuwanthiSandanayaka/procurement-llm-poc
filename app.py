@@ -78,13 +78,15 @@ DOCUMENT_SCHEMA = {
             "document_type": {"type": ["string", "null"]},
             "document_name": {"type": ["string", "null"]},
             "product_scope": {"type": ["string", "null"]},
-            "moq": {"type": ["integer", "null"]},
-            "order_multiple": {"type": ["integer", "null"]},
+
+            "moq": {"type": ["string", "null"]},
+            "order_multiple": {"type": ["string", "null"]},
             "lead_time": {"type": ["string", "null"]},
             "payment_terms": {"type": ["string", "null"]},
             "penalties": {"type": ["string", "null"]},
             "delivery_restrictions": {"type": ["string", "null"]},
             "cancellation_conditions": {"type": ["string", "null"]},
+
             "conditions": {
                 "type": "array",
                 "items": {"type": "string"}
@@ -274,89 +276,99 @@ You are an expert procurement contract analyst.
 
 Your task is to extract procurement and operational constraints from supplier documents and convert them into structured JSON.
 
-The document may contain complex, conditional, or conflicting rules. Your job is to STRUCTURE that complexity — not ignore it.
+The document may be a contract, agreement, supplier policy, ordering guideline, email, spreadsheet-derived text, or mixed-format commercial content.
+
+Your role is not just to find keywords. Your role is to interpret procurement rules and convert them into planner-ready structured outputs.
 
 --------------------------------------------------
 STEP 1: INTERNAL ANALYSIS (DO NOT OUTPUT)
 --------------------------------------------------
 
 First, internally analyze the document and identify:
-- all procurement constraints
-- conditional logic (e.g., seasonal, volume-based, partner-based)
+- procurement constraints
+- conditional rules
+- category-based rules
 - multiple values for the same field
 - conflicting clauses
-- missing or ambiguous information
+- missing or ambiguous fields
 
-Then convert your analysis into structured JSON.
+Then convert the result into structured JSON.
 
-Do NOT output your reasoning.
+Do not output your reasoning.
 
 --------------------------------------------------
-STEP 2: EXTRACTION RULES (CRITICAL)
+STEP 2: GENERAL EXTRACTION RULES
 --------------------------------------------------
 
-1. Extract values EVEN IF they are complex, conditional, or multi-valued.
-2. Do NOT return null if information exists in any form.
+1. Extract values even if they are complex, conditional, or multi-valued.
+2. Do not return null if information exists in any form.
 3. Only return null if the field is completely missing.
-4. When multiple values exist:
-   → combine them into a structured summary string.
-5. When conditions exist:
-   → explicitly include them in the field value.
-6. When conflicts exist:
-   → include the field AND record conflict in "conflicts_or_ambiguities".
-7. Do NOT simplify or drop complexity.
+4. If multiple values exist, return a structured summary string.
+5. If conditions exist, preserve them explicitly.
+6. If conflicts exist, populate both the field and conflicts_or_ambiguities.
+7. Do not oversimplify business rules into a single value when the document contains multiple applicable rules.
 8. Prefer structured summarization over omission.
+9. Prefer outputs that help a procurement planner compare suppliers and make decisions.
 
 --------------------------------------------------
-STEP 3: FIELD-BY-FIELD EXTRACTION
+STEP 3: FIELD-SPECIFIC RULES
 --------------------------------------------------
 
-You must extract each field explicitly:
+supplier_name:
+- extract exact supplier name
 
-- supplier_name → exact supplier name
-- product_scope → summarize all product categories
-- moq → include ALL variations and conditions
-- order_multiple → include all rules
-- lead_time → combine all scenarios
-- payment_terms → include full structure
-- penalties → include all penalties
-- delivery_restrictions → include delivery conditions
-- cancellation_conditions → include cancellation rules
-- conditions → list all additional operational rules
-- order_deadline → extract exact date only
+product_scope:
+- summarize all relevant product categories
 
-DO NOT SKIP fields if evidence exists.
+moq:
+- preserve category-specific, conditional, and conflicting MOQ rules
+- if multiple MOQ rules exist, return a structured summary string
+- example:
+  "Cotton: 600; Polyester: 800; Blended: 700; Long-term partners: 500 (conditional); Internal policy conflict: 650"
+
+order_multiple:
+- preserve standard and special order multiple rules
+- example:
+  "50 standard; 100 for bulk agreements"
+
+lead_time:
+- preserve all scenario-based lead times
+- example:
+  "Off-season: 10–12 days; Peak season: 18–25 days; Repeat orders: 8–10 days"
+
+payment_terms:
+- preserve standard and conditional payment structures
+- example:
+  "Net 45 standard; New clients: 50% advance + balance before shipment"
+
+penalties:
+- summarize all penalties clearly
+
+delivery_restrictions:
+- summarize all delivery limitations or conditions
+
+cancellation_conditions:
+- summarize cancellation restrictions and fees
+
+conditions:
+- list additional operational or commercial conditions not already captured in the core fields
+
+order_deadline:
+- extract the exact deadline date or deadline statement
 
 --------------------------------------------------
-STEP 4: FORMATTING RULES
---------------------------------------------------
-
-Use structured summaries for complex fields:
-
-Examples:
-
-"moq": "Cotton: 600; Polyester: 800; Blended: 700; Reduced: 500 (conditional); Conflict: 650"
-
-"order_multiple": "50 units standard; 100 units bulk"
-
-"lead_time": "Off-season: 10–12 days; Peak: 18–25 days; Repeat: 8–10 days"
-
-"payment_terms": "Net 45; New clients: 50% advance + balance before shipment"
-
---------------------------------------------------
-STEP 5: CONFLICT HANDLING
+STEP 4: CONFLICT HANDLING
 --------------------------------------------------
 
 If conflicting information exists:
-- record it clearly in "conflicts_or_ambiguities"
-- still extract the structured value
+- still populate the field using a structured summary
+- also record the conflict in "conflicts_or_ambiguities"
 
 --------------------------------------------------
-STEP 6: MISSING FIELDS
+STEP 5: MISSING FIELDS
 --------------------------------------------------
 
-If a critical field is missing:
-- add it to "missing_critical_fields"
+If a critical field is missing, add it to "missing_critical_fields".
 
 Critical fields:
 - supplier_name
@@ -367,30 +379,29 @@ Critical fields:
 - order_deadline
 
 --------------------------------------------------
-STEP 7: CONFIDENCE SCORING
+STEP 6: CONFIDENCE SCORING
 --------------------------------------------------
 
-Assign "overall_confidence":
-
-- High → clear, explicit, consistent
-- Medium → conditional or partially conflicting
-- Low → ambiguous or incomplete
+Assign overall_confidence:
+- High = explicit, consistent, and complete
+- Medium = conditional, multi-valued, or partially conflicting
+- Low = ambiguous or incomplete
 
 --------------------------------------------------
-STEP 8: EVIDENCE
+STEP 7: EVIDENCE
 --------------------------------------------------
 
-For each field, include supporting text from the document.
+For each field, provide supporting text copied or closely paraphrased from the document.
 
 --------------------------------------------------
 FINAL OUTPUT RULES
 --------------------------------------------------
 
-- Return STRICT JSON only
-- Do NOT include explanations
-- Do NOT include analysis
-- Do NOT skip fields when information exists
-- Ensure output matches schema exactly
+- Return strict JSON only
+- Do not include explanations
+- Do not include markdown
+- Do not omit fields when evidence exists
+- Ensure output matches the schema exactly
 
 --------------------------------------------------
 DOCUMENT INFO
