@@ -18,28 +18,25 @@ st.set_page_config(
     layout="wide",
 )
 
-st.markdown(
-    """
-    <style>
-    .block-container {
-        padding-top: 1.2rem;
-        padding-bottom: 2rem;
-    }
-    [data-testid="stAppViewContainer"] {
-        background: linear-gradient(to bottom, #f8fbff, #eef4f9);
-    }
-    .card {
-        background: white;
-        padding: 1rem 1.2rem;
-        border-radius: 14px;
-        box-shadow: 0 4px 14px rgba(0,0,0,0.08);
-        margin-bottom: 1rem;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown("---")
+st.subheader("Per-Document JSON Outputs")
 
+for i, output in enumerate(st.session_state.doc_outputs, start=1):
+    title = output.get("document_name") or f"Document {i}"
+
+    with st.expander(f"{i}. {title}", expanded=(i == 1)):
+        st.json(output)
+
+        json_data = json.dumps(output, indent=2).encode("utf-8")
+        safe_name = title.replace(" ", "_").replace(".docx", "").replace(".pdf", "").replace(".txt", "").replace(".xlsx", "").replace(".csv", "")
+
+        st.download_button(
+            label=f"Download JSON for {title}",
+            data=json_data,
+            file_name=f"{safe_name}_output.json",
+            mime="application/json",
+            key=f"download_json_{i}"
+        )
 # -----------------------------
 # Session state
 # -----------------------------
@@ -235,18 +232,26 @@ def parse_deadline(deadline_text):
     if not deadline_text:
         return None
 
-    formats = [
-        "%Y-%m-%d",
-        "%B %d, %Y",
-        "%b %d, %Y",
-        "%d %B %Y"
+    deadline_text = str(deadline_text).strip()
+
+    # First: direct date patterns inside longer text
+    patterns = [
+        r"\b\d{4}-\d{2}-\d{2}\b",                 # 2026-04-12
+        r"\b[A-Z][a-z]+ \d{1,2}, \d{4}\b",       # April 12, 2026
+        r"\b[A-Z][a-z]{2} \d{1,2}, \d{4}\b",     # Apr 12, 2026
+        r"\b\d{1,2} [A-Z][a-z]+ \d{4}\b"         # 12 April 2026
     ]
 
-    for fmt in formats:
-        try:
-            return datetime.strptime(deadline_text.strip(), fmt).date()
-        except Exception:
-            continue
+    for pattern in patterns:
+        match = re.search(pattern, deadline_text)
+        if match:
+            candidate = match.group(0)
+            formats = ["%Y-%m-%d", "%B %d, %Y", "%b %d, %Y", "%d %B %Y"]
+            for fmt in formats:
+                try:
+                    return datetime.strptime(candidate, fmt).date()
+                except Exception:
+                    continue
 
     return None
 
@@ -431,6 +436,47 @@ DOCUMENT TEXT
     )
 
     return json.loads(response.output_text)
+def clean_deadline_for_tracker(deadline_text):
+    parsed = parse_deadline(deadline_text)
+    if parsed:
+        return parsed.strftime("%Y-%m-%d")
+    return deadline_text
+
+def shorten_text(value, max_len=60):
+    if value is None:
+        return None
+    value = str(value).strip()
+    if len(value) <= max_len:
+        return value
+    return value[:max_len - 3] + "..."
+
+def tracker_ready_value(field_name, value):
+    if value is None:
+        return None
+
+    value = str(value).strip()
+
+    if field_name == "order_deadline":
+        parsed = parse_deadline(value)
+        if parsed:
+            return parsed.strftime("%Y-%m-%d")
+
+    if field_name == "payment_terms":
+        return shorten_text(value, 45)
+
+    if field_name == "lead_time":
+        return shorten_text(value, 40)
+
+    if field_name == "moq":
+        return shorten_text(value, 50)
+
+    if field_name == "order_multiple":
+        return shorten_text(value, 35)
+
+    if field_name == "product_scope":
+        return shorten_text(value, 35)
+
+    return shorten_text(value, 50)
 
 # -----------------------------
 # UI
@@ -540,26 +586,40 @@ if st.session_state.doc_outputs:
     st.markdown("---")
     st.subheader("📊 Active Supplier Tracker")
 
-    tracker_rows = []
+   tracker_rows = []
 
-    for doc in st.session_state.doc_outputs:
-        tracker_rows.append({
-            "Supplier": doc.get("supplier_name"),
-            "Document": doc.get("document_name"),
-            "Product Scope": doc.get("product_scope"),
-            "MOQ": doc.get("moq"),
-            "Order Multiple": doc.get("order_multiple"),
-            "Lead Time": doc.get("lead_time"),
-            "Payment Terms": doc.get("payment_terms"),
-            "Deadline": doc.get("order_deadline"),
-            "Status": get_status(doc.get("order_deadline")),
-            "Confidence": doc.get("overall_confidence"),
-        })
+for doc in st.session_state.doc_outputs:
+    raw_deadline = doc.get("order_deadline")
+
+    tracker_rows.append({
+        "Supplier": tracker_ready_value("supplier_name", doc.get("supplier_name")),
+        "Document": tracker_ready_value("document_name", doc.get("document_name")),
+        "Product Scope": tracker_ready_value("product_scope", doc.get("product_scope")),
+        "MOQ": tracker_ready_value("moq", doc.get("moq")),
+        "Order Multiple": tracker_ready_value("order_multiple", doc.get("order_multiple")),
+        "Lead Time": tracker_ready_value("lead_time", doc.get("lead_time")),
+        "Payment Terms": tracker_ready_value("payment_terms", doc.get("payment_terms")),
+        "Deadline": tracker_ready_value("order_deadline", raw_deadline),
+        "Status": get_status(raw_deadline),
+        "Confidence": doc.get("overall_confidence"),
+    })
+    status_order = {
+    "Urgent": 0,
+    "Upcoming": 1,
+    "Planned": 2,
+    "No deadline": 3
+}
+
+tracker_df["Status_Order"] = tracker_df["Status"].map(status_order)
+tracker_df = tracker_df.sort_values(by=["Status_Order", "Deadline"], na_position="last").drop(columns=["Status_Order"])
 
     tracker_df = pd.DataFrame(tracker_rows)
-
     if not tracker_df.empty:
-        st.dataframe(tracker_df, use_container_width=True)
+    st.dataframe(
+        tracker_df,
+        use_container_width=True,
+        hide_index=True
+    )
 
         tracker_csv = tracker_df.to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -583,3 +643,10 @@ st.markdown("---")
 if st.button("Reset"):
     st.session_state.doc_outputs = []
     st.rerun()
+all_json_data = json.dumps(st.session_state.doc_outputs, indent=2).encode("utf-8")
+st.download_button(
+    "Download All JSON Outputs",
+    all_json_data,
+    "all_document_outputs.json",
+    "application/json"
+)
