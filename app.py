@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from io import BytesIO
 from datetime import datetime, date
 
@@ -18,25 +19,29 @@ st.set_page_config(
     layout="wide",
 )
 
-st.markdown("---")
-st.subheader("Per-Document JSON Outputs")
+st.markdown(
+    """
+    <style>
+    .block-container {
+        padding-top: 1.2rem;
+        padding-bottom: 2rem;
+        max-width: 1400px;
+    }
+    [data-testid="stAppViewContainer"] {
+        background: linear-gradient(to bottom, #f8fbff, #eef4f9);
+    }
+    .card {
+        background: white;
+        padding: 1rem 1.2rem;
+        border-radius: 14px;
+        box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+        margin-bottom: 1rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-for i, output in enumerate(st.session_state.doc_outputs, start=1):
-    title = output.get("document_name") or f"Document {i}"
-
-    with st.expander(f"{i}. {title}", expanded=(i == 1)):
-        st.json(output)
-
-        json_data = json.dumps(output, indent=2).encode("utf-8")
-        safe_name = title.replace(" ", "_").replace(".docx", "").replace(".pdf", "").replace(".txt", "").replace(".xlsx", "").replace(".csv", "")
-
-        st.download_button(
-            label=f"Download JSON for {title}",
-            data=json_data,
-            file_name=f"{safe_name}_output.json",
-            mime="application/json",
-            key=f"download_json_{i}"
-        )
 # -----------------------------
 # Session state
 # -----------------------------
@@ -75,7 +80,6 @@ DOCUMENT_SCHEMA = {
             "document_type": {"type": ["string", "null"]},
             "document_name": {"type": ["string", "null"]},
             "product_scope": {"type": ["string", "null"]},
-
             "moq": {"type": ["string", "null"]},
             "order_multiple": {"type": ["string", "null"]},
             "lead_time": {"type": ["string", "null"]},
@@ -83,7 +87,6 @@ DOCUMENT_SCHEMA = {
             "penalties": {"type": ["string", "null"]},
             "delivery_restrictions": {"type": ["string", "null"]},
             "cancellation_conditions": {"type": ["string", "null"]},
-
             "conditions": {
                 "type": "array",
                 "items": {"type": "string"}
@@ -188,20 +191,24 @@ def extract_docx_text(file_bytes: bytes) -> str:
 def dataframe_to_text(df: pd.DataFrame, label: str) -> str:
     lines = [f"Source table: {label}"]
     headers = [str(col).strip() for col in df.columns.tolist()]
+
     for _, row in df.iterrows():
         row_parts = []
         for h, v in zip(headers, row.tolist()):
             value = "" if pd.isna(v) else str(v).strip()
             row_parts.append(f"{h}: {value}")
         lines.append(" | ".join(row_parts))
+
     return "\n".join(lines)
 
 def extract_excel_text(file_bytes: bytes) -> str:
     excel = pd.ExcelFile(BytesIO(file_bytes))
     sheet_texts = []
+
     for sheet_name in excel.sheet_names:
         df = pd.read_excel(BytesIO(file_bytes), sheet_name=sheet_name)
         sheet_texts.append(dataframe_to_text(df, sheet_name))
+
     return "\n\n".join(sheet_texts).strip()
 
 def extract_csv_text(file_bytes: bytes) -> str:
@@ -234,12 +241,11 @@ def parse_deadline(deadline_text):
 
     deadline_text = str(deadline_text).strip()
 
-    # First: direct date patterns inside longer text
     patterns = [
-        r"\b\d{4}-\d{2}-\d{2}\b",                 # 2026-04-12
-        r"\b[A-Z][a-z]+ \d{1,2}, \d{4}\b",       # April 12, 2026
-        r"\b[A-Z][a-z]{2} \d{1,2}, \d{4}\b",     # Apr 12, 2026
-        r"\b\d{1,2} [A-Z][a-z]+ \d{4}\b"         # 12 April 2026
+        r"\b\d{4}-\d{2}-\d{2}\b",
+        r"\b[A-Z][a-z]+ \d{1,2}, \d{4}\b",
+        r"\b[A-Z][a-z]{2} \d{1,2}, \d{4}\b",
+        r"\b\d{1,2} [A-Z][a-z]+ \d{4}\b"
     ]
 
     for pattern in patterns:
@@ -269,6 +275,48 @@ def get_status(deadline_text):
         return "Upcoming"
     else:
         return "Planned"
+
+def shorten_text(value, max_len=60):
+    if value is None:
+        return None
+
+    value = str(value).strip()
+    if len(value) <= max_len:
+        return value
+
+    return value[: max_len - 3] + "..."
+
+def tracker_ready_value(field_name, value):
+    if value is None:
+        return None
+
+    value = str(value).strip()
+
+    if field_name == "order_deadline":
+        parsed = parse_deadline(value)
+        if parsed:
+            return parsed.strftime("%Y-%m-%d")
+        return shorten_text(value, 45)
+
+    if field_name == "payment_terms":
+        return shorten_text(value, 50)
+
+    if field_name == "lead_time":
+        return shorten_text(value, 45)
+
+    if field_name == "moq":
+        return shorten_text(value, 55)
+
+    if field_name == "order_multiple":
+        return shorten_text(value, 35)
+
+    if field_name == "product_scope":
+        return shorten_text(value, 40)
+
+    if field_name == "document_name":
+        return shorten_text(value, 30)
+
+    return shorten_text(value, 50)
 
 # -----------------------------
 # LLM extraction
@@ -436,47 +484,6 @@ DOCUMENT TEXT
     )
 
     return json.loads(response.output_text)
-def clean_deadline_for_tracker(deadline_text):
-    parsed = parse_deadline(deadline_text)
-    if parsed:
-        return parsed.strftime("%Y-%m-%d")
-    return deadline_text
-
-def shorten_text(value, max_len=60):
-    if value is None:
-        return None
-    value = str(value).strip()
-    if len(value) <= max_len:
-        return value
-    return value[:max_len - 3] + "..."
-
-def tracker_ready_value(field_name, value):
-    if value is None:
-        return None
-
-    value = str(value).strip()
-
-    if field_name == "order_deadline":
-        parsed = parse_deadline(value)
-        if parsed:
-            return parsed.strftime("%Y-%m-%d")
-
-    if field_name == "payment_terms":
-        return shorten_text(value, 45)
-
-    if field_name == "lead_time":
-        return shorten_text(value, 40)
-
-    if field_name == "moq":
-        return shorten_text(value, 50)
-
-    if field_name == "order_multiple":
-        return shorten_text(value, 35)
-
-    if field_name == "product_scope":
-        return shorten_text(value, 35)
-
-    return shorten_text(value, 50)
 
 # -----------------------------
 # UI
@@ -487,7 +494,8 @@ with st.sidebar:
 1. Upload multiple supplier documents  
 2. Parse PDF / DOCX / TXT / XLSX / CSV  
 3. Extract constraints with LLM  
-4. Review tracker + JSON outputs
+4. Review tracker + JSON outputs  
+5. Export CSV / JSON
 """)
     st.info("This PoC directly validates LLM use and prompt engineering.")
     st.warning("Use text-readable files for best results.")
@@ -586,40 +594,45 @@ if st.session_state.doc_outputs:
     st.markdown("---")
     st.subheader("📊 Active Supplier Tracker")
 
-   tracker_rows = []
+    tracker_rows = []
 
-for doc in st.session_state.doc_outputs:
-    raw_deadline = doc.get("order_deadline")
+    for doc in st.session_state.doc_outputs:
+        raw_deadline = doc.get("order_deadline")
 
-    tracker_rows.append({
-        "Supplier": tracker_ready_value("supplier_name", doc.get("supplier_name")),
-        "Document": tracker_ready_value("document_name", doc.get("document_name")),
-        "Product Scope": tracker_ready_value("product_scope", doc.get("product_scope")),
-        "MOQ": tracker_ready_value("moq", doc.get("moq")),
-        "Order Multiple": tracker_ready_value("order_multiple", doc.get("order_multiple")),
-        "Lead Time": tracker_ready_value("lead_time", doc.get("lead_time")),
-        "Payment Terms": tracker_ready_value("payment_terms", doc.get("payment_terms")),
-        "Deadline": tracker_ready_value("order_deadline", raw_deadline),
-        "Status": get_status(raw_deadline),
-        "Confidence": doc.get("overall_confidence"),
-    })
-    status_order = {
-    "Urgent": 0,
-    "Upcoming": 1,
-    "Planned": 2,
-    "No deadline": 3
-}
-
-tracker_df["Status_Order"] = tracker_df["Status"].map(status_order)
-tracker_df = tracker_df.sort_values(by=["Status_Order", "Deadline"], na_position="last").drop(columns=["Status_Order"])
+        tracker_rows.append({
+            "Supplier": tracker_ready_value("supplier_name", doc.get("supplier_name")),
+            "Document": tracker_ready_value("document_name", doc.get("document_name")),
+            "Product Scope": tracker_ready_value("product_scope", doc.get("product_scope")),
+            "MOQ": tracker_ready_value("moq", doc.get("moq")),
+            "Order Multiple": tracker_ready_value("order_multiple", doc.get("order_multiple")),
+            "Lead Time": tracker_ready_value("lead_time", doc.get("lead_time")),
+            "Payment Terms": tracker_ready_value("payment_terms", doc.get("payment_terms")),
+            "Deadline": tracker_ready_value("order_deadline", raw_deadline),
+            "Status": get_status(raw_deadline),
+            "Confidence": doc.get("overall_confidence"),
+        })
 
     tracker_df = pd.DataFrame(tracker_rows)
+
     if not tracker_df.empty:
-    st.dataframe(
-        tracker_df,
-        use_container_width=True,
-        hide_index=True
-    )
+        status_order = {
+            "Urgent": 0,
+            "Upcoming": 1,
+            "Planned": 2,
+            "No deadline": 3
+        }
+
+        tracker_df["Status_Order"] = tracker_df["Status"].map(status_order)
+        tracker_df = tracker_df.sort_values(
+            by=["Status_Order", "Deadline"],
+            na_position="last"
+        ).drop(columns=["Status_Order"])
+
+        st.dataframe(
+            tracker_df,
+            use_container_width=True,
+            hide_index=True
+        )
 
         tracker_csv = tracker_df.to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -627,6 +640,14 @@ tracker_df = tracker_df.sort_values(by=["Status_Order", "Deadline"], na_position
             tracker_csv,
             "supplier_tracker.csv",
             "text/csv"
+        )
+
+        all_json_data = json.dumps(st.session_state.doc_outputs, indent=2).encode("utf-8")
+        st.download_button(
+            "Download All JSON Outputs",
+            all_json_data,
+            "all_document_outputs.json",
+            "application/json"
         )
     else:
         st.info("No tracker data available.")
@@ -636,17 +657,30 @@ tracker_df = tracker_df.sort_values(by=["Status_Order", "Deadline"], na_position
 
     for i, output in enumerate(st.session_state.doc_outputs, start=1):
         title = output.get("document_name") or f"Document {i}"
+
         with st.expander(f"{i}. {title}", expanded=(i == 1)):
             st.json(output)
+
+            json_data = json.dumps(output, indent=2).encode("utf-8")
+            safe_name = (
+                title.replace(" ", "_")
+                .replace(".docx", "")
+                .replace(".pdf", "")
+                .replace(".txt", "")
+                .replace(".xlsx", "")
+                .replace(".csv", "")
+            )
+
+            st.download_button(
+                label=f"Download JSON for {title}",
+                data=json_data,
+                file_name=f"{safe_name}_output.json",
+                mime="application/json",
+                key=f"download_json_{i}"
+            )
 
 st.markdown("---")
 if st.button("Reset"):
     st.session_state.doc_outputs = []
     st.rerun()
-all_json_data = json.dumps(st.session_state.doc_outputs, indent=2).encode("utf-8")
-st.download_button(
-    "Download All JSON Outputs",
-    all_json_data,
-    "all_document_outputs.json",
-    "application/json"
 )
